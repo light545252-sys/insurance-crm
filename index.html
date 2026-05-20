@@ -929,9 +929,22 @@ async function notionFetch(path, method, body) {
   return r.json();
 }
 
-async function notionQuery(dbId, filter = null) {
-  const body = filter ? { filter } : {};
-  return notionFetch(`/databases/${dbId}/query`, 'POST', body);
+async function notionQuery(dbId, filter = null, paginate = false) {
+  if (!paginate) {
+    const body = filter ? { filter } : {};
+    return notionFetch(`/databases/${dbId}/query`, 'POST', body);
+  }
+  // 分頁模式：撈完所有資料（不受 100 筆限制）
+  let allResults = [];
+  let cursor = undefined;
+  do {
+    const body = filter ? { filter } : {};
+    if (cursor) body.start_cursor = cursor;
+    const data = await notionFetch(`/databases/${dbId}/query`, 'POST', body);
+    allResults = allResults.concat(data.results);
+    cursor = data.has_more ? data.next_cursor : undefined;
+  } while (cursor);
+  return { results: allResults };
 }
 
 async function notionCreate(dbId, properties) {
@@ -947,7 +960,8 @@ async function notionUpdate(pageId, properties) {
 // ════════════════════════════════════════════════
 async function loadClients() {
   try {
-    const data = await notionQuery(DB.clients);
+    document.getElementById('client-list').innerHTML = '<div class="empty-state"><div style="color:var(--text2);font-size:13px">⏳ 載入客戶資料中（可能需要幾秒）...</div></div>';
+    const data = await notionQuery(DB.clients, null, true); // ✅ 分頁模式，撈全部
     clientsCache = data.results.map(p => {
       const titleKey = Object.keys(p.properties).find(k => p.properties[k].type === 'title');
       const name = titleKey ? (p.properties[titleKey]?.title?.[0]?.text?.content || '') : '';
@@ -1053,7 +1067,16 @@ function searchClient(prefix, query) {
   if (!query.trim()) { dropdown.classList.remove('open'); return; }
   const matches = clientsCache.filter(c => c.name.includes(query)).slice(0, 6);
   if (!matches.length) {
-    dropdown.innerHTML = `<div class="client-option" style="color:var(--text3)">找不到「${query}」</div>`;
+    // ✅ 找不到時，顯示「新增為新客戶」選項
+    dropdown.innerHTML = `
+      <div class="client-option" style="color:var(--text3);pointer-events:none">找不到「${query}」</div>
+      <div class="client-option" style="color:var(--green);border-top:1px solid var(--border2)" onclick="createAndSelectClient('${prefix}', '${query}')">
+        <div class="client-avatar" style="background:var(--green-bg);color:var(--green)">＋</div>
+        <div>
+          <div class="client-option-name">新增「${query}」為新客戶</div>
+          <div class="client-option-status">建立客戶檔案 → 潛在客戶</div>
+        </div>
+      </div>`;
   } else {
     dropdown.innerHTML = matches.map(c => `
       <div class="client-option" onclick="selectClient('${prefix}', '${c.id}', '${c.name}', '${c.url}')">
@@ -1071,6 +1094,29 @@ function selectClient(prefix, id, name, url) {
   document.getElementById(`${prefix}-client-search`).value = name;
   document.getElementById(`${prefix}-client-id`).value = url;
   document.getElementById(`${prefix}-dropdown`).classList.remove('open');
+}
+
+// ✅ 新增：自動建立新客戶並帶入欄位
+async function createAndSelectClient(prefix, name) {
+  const dropdown = document.getElementById(`${prefix}-dropdown`);
+  dropdown.innerHTML = `<div class="client-option" style="color:var(--text2)">⏳ 建立客戶「${name}」中...</div>`;
+  try {
+    const newClient = await notionCreate(DB.clients, {
+      '客戶姓名': { title: [{ text: { content: name } }] },
+      '客戶狀態': { select: { name: '潛在客戶' } },
+    });
+    // 加入 cache
+    const newEntry = { id: newClient.id, url: newClient.url, name: name, status: '潛在客戶' };
+    clientsCache.unshift(newEntry);
+    // 帶入欄位
+    document.getElementById(`${prefix}-client-search`).value = name;
+    document.getElementById(`${prefix}-client-id`).value = newClient.url;
+    dropdown.classList.remove('open');
+    showToast(`✅ 已新增客戶「${name}」`, 'success');
+  } catch(e) {
+    showToast('建立客戶失敗：' + e.message, 'error');
+    dropdown.classList.remove('open');
+  }
 }
 
 // ════════════════════════════════════════════════
@@ -1125,6 +1171,8 @@ async function submitRelation() {
   const note = document.getElementById('r1-note').value;
   const status = document.getElementById('r1-status').value;
   if (!clientName || !method) { showToast('請選擇客戶和聯繫方式', 'error'); return; }
+  // ✅ 防呆：必須從下拉選單選取，確保 Relation 有正確 ID
+  if (!clientUrl) { showToast('請從下拉選單選取客戶，或點「新增」建立新客戶', 'error'); return; }
 
   setLoading('r1-submit', true);
   try {
@@ -1167,6 +1215,8 @@ async function submitReferral() {
   const note = document.getElementById('r2-note').value;
   const method = document.getElementById('r2-method').value || 'LINE 訊息';
   if (!clientName || !note) { showToast('請選擇客戶並填寫鋪墊內容', 'error'); return; }
+  // ✅ 防呆
+  if (!clientUrl) { showToast('請從下拉選單選取客戶，或點「新增」建立新客戶', 'error'); return; }
 
   setLoading('r2-submit', true);
   try {
@@ -1246,6 +1296,8 @@ async function submitProposal() {
   const note = document.getElementById('r4-note').value;
   const status = document.getElementById('r4-status').value;
   if (!clientName) { showToast('請選擇客戶', 'error'); return; }
+  // ✅ 防呆
+  if (!clientUrl) { showToast('請從下拉選單選取客戶，或點「新增」建立新客戶', 'error'); return; }
 
   setLoading('r4-submit', true);
   try {
@@ -1296,6 +1348,8 @@ async function submitDeal() {
   const premium = document.getElementById('r5-premium').value;
   const note = document.getElementById('r5-note').value;
   if (!clientName || !product) { showToast('請選擇客戶並填寫成交險種', 'error'); return; }
+  // ✅ 防呆
+  if (!clientUrl) { showToast('請從下拉選單選取客戶，或點「新增」建立新客戶', 'error'); return; }
 
   setLoading('r5-submit', true);
   try {
