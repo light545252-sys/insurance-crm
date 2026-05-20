@@ -1067,32 +1067,46 @@ function searchClient(prefix, query) {
   if (!query.trim()) { dropdown.classList.remove('open'); return; }
   const matches = clientsCache.filter(c => c.name.includes(query)).slice(0, 6);
   if (!matches.length) {
-    // ✅ 找不到時，顯示「新增為新客戶」選項
+    // ✅ 找不到時，顯示「新增為新客戶」選項（用 data-newname 傳名字，避免特殊字元污染）
     dropdown.innerHTML = `
       <div class="client-option" style="color:var(--text3);pointer-events:none">找不到「${query}」</div>
-      <div class="client-option" style="color:var(--green);border-top:1px solid var(--border2)" onclick="createAndSelectClient('${prefix}', '${query}')">
+      <div class="client-option add-new-client" style="color:var(--green);border-top:1px solid var(--border2)" data-prefix="${prefix}" data-newname="">
         <div class="client-avatar" style="background:var(--green-bg);color:var(--green)">＋</div>
         <div>
           <div class="client-option-name">新增「${query}」為新客戶</div>
           <div class="client-option-status">建立客戶檔案 → 潛在客戶</div>
         </div>
       </div>`;
+    // ✅ 用 dataset 安全傳遞名字，完全避開引號/特殊字元問題
+    dropdown.querySelector('.add-new-client').dataset.newname = query;
+    dropdown.querySelector('.add-new-client').addEventListener('click', function() {
+      createAndSelectClient(this.dataset.prefix, this.dataset.newname);
+    });
   } else {
-    dropdown.innerHTML = matches.map(c => `
-      <div class="client-option" onclick="selectClient('${prefix}', '${c.id}', '${c.name}', '${c.url}')">
+    // ✅ 改用 data-index 取代 onclick 內嵌字串，名字有英文/括號/特殊字元都不會出錯
+    dropdown.innerHTML = matches.map((c, i) => `
+      <div class="client-option" data-prefix="${prefix}" data-index="${i}">
         <div class="client-avatar">${c.name.substring(0,1)}</div>
         <div>
           <div class="client-option-name">${c.name}</div>
           <div class="client-option-status">${c.status}</div>
         </div>
       </div>`).join('');
+    // ✅ 用 addEventListener 綁定，透過 index 取回完整資料，不經過字串
+    dropdown.querySelectorAll('.client-option[data-index]').forEach((el, i) => {
+      el.addEventListener('click', function() {
+        const c = matches[parseInt(this.dataset.index)];
+        selectClient(this.dataset.prefix, c.id, c.name, c.id);
+      });
+    });
   }
   dropdown.classList.add('open');
 }
 
-function selectClient(prefix, id, name, url) {
+function selectClient(prefix, id, name, pageId) {
   document.getElementById(`${prefix}-client-search`).value = name;
-  document.getElementById(`${prefix}-client-id`).value = url;
+  // ✅ 直接存純 UUID（c.id），完全不經過 url parse
+  document.getElementById(`${prefix}-client-id`).value = pageId;
   document.getElementById(`${prefix}-dropdown`).classList.remove('open');
 }
 
@@ -1105,12 +1119,12 @@ async function createAndSelectClient(prefix, name) {
       '客戶姓名': { title: [{ text: { content: name } }] },
       '客戶狀態': { select: { name: '潛在客戶' } },
     });
-    // 加入 cache
+    // ✅ 加入 cache，用純 id
     const newEntry = { id: newClient.id, url: newClient.url, name: name, status: '潛在客戶' };
     clientsCache.unshift(newEntry);
-    // 帶入欄位
+    // ✅ 存純 UUID
     document.getElementById(`${prefix}-client-search`).value = name;
-    document.getElementById(`${prefix}-client-id`).value = newClient.url;
+    document.getElementById(`${prefix}-client-id`).value = newClient.id;
     dropdown.classList.remove('open');
     showToast(`✅ 已新增客戶「${name}」`, 'success');
   } catch(e) {
@@ -1186,7 +1200,7 @@ async function submitRelation() {
       '跟進狀態': { select: { name: status } },
     };
     if (note) visitProps['本次重點摘要'] = { rich_text: [{ text: { content: note } }] };
-    if (clientUrl) visitProps['🔗 客戶'] = { relation: [{ id: clientUrl.split('/').pop().replaceAll('-', '') }] };
+    if (clientUrl) visitProps['🔗 客戶'] = { relation: [{ id: clientUrl }] };
     await notionCreate(DB.visits, visitProps);
 
     const taskProps = {
@@ -1196,7 +1210,7 @@ async function submitRelation() {
       '完成狀態': { select: { name: '✅ 已完成' } },
       '聯繫方式': { select: { name: method } },
     };
-    if (clientUrl) taskProps['🔗 對象客戶'] = { relation: [{ id: clientUrl.split('/').pop().replaceAll('-', '') }] };
+    if (clientUrl) taskProps['🔗 對象客戶'] = { relation: [{ id: clientUrl }] };
     await notionCreate(DB.tasks, taskProps);
 
     showToast('✅ 關係維護記錄完成', 'success');
@@ -1227,7 +1241,7 @@ async function submitReferral() {
       '跟進狀態': { select: { name: '進行中' } },
       '本次重點摘要': { rich_text: [{ text: { content: note } }] },
     };
-    if (clientUrl) visitProps['🔗 客戶'] = { relation: [{ id: clientUrl.split('/').pop().replaceAll('-','') }] };
+    if (clientUrl) visitProps['🔗 客戶'] = { relation: [{ id: clientUrl }] };
     await notionCreate(DB.visits, visitProps);
 
     const taskProps = {
@@ -1237,7 +1251,7 @@ async function submitReferral() {
       '完成狀態': { select: { name: '✅ 已完成' } },
       '聯繫方式': { select: { name: method } },
     };
-    if (clientUrl) taskProps['🔗 對象客戶'] = { relation: [{ id: clientUrl.split('/').pop().replaceAll('-','') }] };
+    if (clientUrl) taskProps['🔗 對象客戶'] = { relation: [{ id: clientUrl }] };
     await notionCreate(DB.tasks, taskProps);
 
     showToast('✅ 轉介紹鋪墊記錄完成', 'success');
@@ -1308,7 +1322,7 @@ async function submitProposal() {
       '跟進狀態': { select: { name: status } },
     };
     if (note) visitProps['本次重點摘要'] = { rich_text: [{ text: { content: note } }] };
-    if (clientUrl) visitProps['🔗 客戶'] = { relation: [{ id: clientUrl.split('/').pop().replaceAll('-','') }] };
+    if (clientUrl) visitProps['🔗 客戶'] = { relation: [{ id: clientUrl }] };
     await notionCreate(DB.visits, visitProps);
 
     if (insType) {
@@ -1318,7 +1332,7 @@ async function submitProposal() {
         '成交狀態': { select: { name: '洽談中' } },
       };
       if (premium && !isNaN(parseInt(premium))) proposalProps['年繳保費'] = { number: parseInt(premium) };
-      if (clientUrl) proposalProps['🔗 客戶'] = { relation: [{ id: clientUrl.split('/').pop().replaceAll('-','') }] };
+      if (clientUrl) proposalProps['🔗 客戶'] = { relation: [{ id: clientUrl }] };
       await notionCreate(DB.proposals, proposalProps);
     }
 
@@ -1328,7 +1342,7 @@ async function submitProposal() {
       '日期': { date: { start: today() } },
       '完成狀態': { select: { name: '✅ 已完成' } },
     };
-    if (clientUrl) taskProps['🔗 對象客戶'] = { relation: [{ id: clientUrl.split('/').pop().replaceAll('-','') }] };
+    if (clientUrl) taskProps['🔗 對象客戶'] = { relation: [{ id: clientUrl }] };
     await notionCreate(DB.tasks, taskProps);
 
     showToast('✅ 保單說明記錄完成', 'success');
@@ -1365,8 +1379,7 @@ async function submitDeal() {
 
     // Update client status
     if (clientUrl) {
-      const clientId = clientUrl.split('/').pop().replaceAll('-','');
-      try { await notionUpdate(clientId, { '客戶狀態': { select: { name: '現有客戶' } } }); } catch(e) {}
+      try { await notionUpdate(clientUrl, { '客戶狀態': { select: { name: '現有客戶' } } }); } catch(e) {}
     }
 
     // Create visit record
@@ -1378,7 +1391,7 @@ async function submitDeal() {
     };
     const noteText = [product, premium ? `年繳 ${parseInt(premium).toLocaleString()} 元` : '', note].filter(Boolean).join('｜');
     if (noteText) visitProps['本次重點摘要'] = { rich_text: [{ text: { content: noteText } }] };
-    if (clientUrl) visitProps['🔗 客戶'] = { relation: [{ id: clientUrl.split('/').pop().replaceAll('-','') }] };
+    if (clientUrl) visitProps['🔗 客戶'] = { relation: [{ id: clientUrl }] };
     await notionCreate(DB.visits, visitProps);
 
     showToast('🎉 成交！已更新 Notion', 'success');
